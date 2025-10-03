@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liquid Glass Lens</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 100vw;
+      height: 100vh;
+      background-image: url('image.png');
+      background-size: cover;
+      background-position: center;
+      background-repeat: no-repeat;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .draggable-box {
+      position: absolute;
+      width: 800px;
+      height: 200px;
+      cursor: move;
+      border-radius: 30px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+
+    .draggable-box:active {
+      cursor: grabbing;
+    }
+
+    #boxCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="draggable-box" id="box">
+    <canvas id="boxCanvas"></canvas>
+  </div>
+
+  <script>
+    const box = document.getElementById('box');
+    const canvas = document.getElementById('boxCanvas');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    let isDragging = false;
+    let offsetX, offsetY;
+
+    // Effect parameters
+    const padding = 0; 
+    const margin = 30; 
+    const maxDisplacement = 20; 
+
+    // Load background image
+    const bgImage = new Image();
+    bgImage.src = 'image.png';
+    let bgLoaded = false;
+    bgImage.onload = () => {
+      bgLoaded = true;
+      updateCanvas();
+    };
+
+    function resizeCanvas() {
+      const rect = box.getBoundingClientRect();
+      canvas.width = rect.width;
+      canvas.height = rect.height;
+      if (bgLoaded) updateCanvas();
+    }
+
+    // Bilinear sampling helper
+    function sampleBilinear(data, width, height, x, y) {
+      const x0 = Math.floor(x), y0 = Math.floor(y);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const y1 = Math.min(height - 1, y0 + 1);
+      const dx = x - x0, dy = y - y0;
+
+      function getPixel(ix, iy) {
+        const idx = (iy * width + ix) * 4;
+        return [data[idx], data[idx + 1], data[idx + 2], data[idx + 3]];
+      }
+
+      const p00 = getPixel(x0, y0);
+      const p10 = getPixel(x1, y0);
+      const p01 = getPixel(x0, y1);
+      const p11 = getPixel(x1, y1);
+
+      return [
+        p00[0] * (1 - dx) * (1 - dy) + p10[0] * dx * (1 - dy) + p01[0] * (1 - dx) * dy + p11[0] * dx * dy,
+        p00[1] * (1 - dx) * (1 - dy) + p10[1] * dx * (1 - dy) + p01[1] * (1 - dx) * dy + p11[1] * dx * dy,
+        p00[2] * (1 - dx) * (1 - dy) + p10[2] * dx * (1 - dy) + p01[2] * (1 - dx) * dy + p11[2] * dx * dy,
+        255
+      ];
+    }
+
+    // Sharpen filter
+    function sharpenImage(ctx, width, height) {
+      const imageData = ctx.getImageData(0, 0, width, height);
+      const data = imageData.data;
+      const copy = new Uint8ClampedArray(data);
+
+      const kernel = [
+        0, -1, 0,
+        -1, 5, -1,
+        0, -1, 0
+      ];
+
+      const side = 3;
+      const half = Math.floor(side / 2);
+
+      for (let y = 1; y < height - 1; y++) {
+        for (let x = 1; x < width - 1; x++) {
+          let r = 0, g = 0, b = 0;
+
+          for (let ky = 0; ky < side; ky++) {
+            for (let kx = 0; kx < side; kx++) {
+              const px = (y + ky - half) * width + (x + kx - half);
+              const wt = kernel[ky * side + kx];
+              r += copy[px * 4] * wt;
+              g += copy[px * 4 + 1] * wt;
+              b += copy[px * 4 + 2] * wt;
+            }
+          }
+
+          const idx = (y * width + x) * 4;
+          data[idx] = Math.min(255, Math.max(0, r));
+          data[idx + 1] = Math.min(255, Math.max(0, g));
+          data[idx + 2] = Math.min(255, Math.max(0, b));
+        }
+      }
+
+      ctx.putImageData(imageData, 0, 0);
+    }
+
+    function updateCanvas() {
+      if (!bgLoaded) return;
+
+      const boxRect = box.getBoundingClientRect();
+      const w = canvas.width, h = canvas.height;
+
+      const bgAspect = bgImage.width / bgImage.height;
+      const windowAspect = window.innerWidth / window.innerHeight;
+      let bgDisplayWidth, bgDisplayHeight, bgOffsetX, bgOffsetY;
+
+      if (bgAspect > windowAspect) {
+        bgDisplayHeight = window.innerHeight;
+        bgDisplayWidth = bgDisplayHeight * bgAspect;
+        bgOffsetX = (window.innerWidth - bgDisplayWidth) / 2;
+        bgOffsetY = 0;
+      } else {
+        bgDisplayWidth = window.innerWidth;
+        bgDisplayHeight = bgDisplayWidth / bgAspect;
+        bgOffsetX = 0;
+        bgOffsetY = (window.innerHeight - bgDisplayHeight) / 2;
+      }
+
+      const scaleX = bgImage.width / bgDisplayWidth;
+      const scaleY = bgImage.height / bgDisplayHeight;
+
+      const expandedCanvas = document.createElement('canvas');
+      expandedCanvas.width = w + margin * 2;
+      expandedCanvas.height = h + margin * 2;
+      const expandedCtx = expandedCanvas.getContext('2d');
+
+      expandedCtx.drawImage(
+        bgImage,
+        (boxRect.left - bgOffsetX - margin) * scaleX,
+        (boxRect.top - bgOffsetY - margin) * scaleY,
+        (w + margin * 2) * scaleX,
+        (h + margin * 2) * scaleY,
+        0, 0,
+        expandedCanvas.width,
+        expandedCanvas.height
+      );
+
+      const expandedData = expandedCtx.getImageData(0, 0, expandedCanvas.width, expandedCanvas.height);
+      const outputData = ctx.createImageData(w, h);
+      const data = expandedData.data;
+      const output = outputData.data;
+
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const distTop = y;
+          const distBottom = h - 1 - y;
+          const distLeft = x;
+          const distRight = w - 1 - x;
+          const minDist = Math.min(distTop, distBottom, distLeft, distRight);
+
+          let displaceX = 0, displaceY = 0, intensity = 0;
+
+          if (minDist < padding) {
+            intensity = Math.pow(1 - (minDist / padding), 1.5);
+            if (minDist === distTop) displaceY = intensity * maxDisplacement;
+            else if (minDist === distBottom) displaceY = -intensity * maxDisplacement;
+            if (minDist === distLeft) displaceX = intensity * maxDisplacement;
+            else if (minDist === distRight) displaceX = -intensity * maxDisplacement;
+          } else if (minDist < padding + margin) {
+            const distFromPadding = minDist - padding;
+            intensity = Math.pow(1 - (distFromPadding / margin), 1.5);
+            if (minDist === distTop) displaceY = -intensity * maxDisplacement;
+            else if (minDist === distBottom) displaceY = intensity * maxDisplacement;
+            if (minDist === distLeft) displaceX = -intensity * maxDisplacement;
+            else if (minDist === distRight) displaceX = intensity * maxDisplacement;
+          }
+
+          const time = Date.now() * 0.001;
+          const waveX = Math.sin(y * 0.05 + time) * intensity * 2;
+          const waveY = Math.cos(x * 0.05 + time) * intensity * 2;
+
+          const sampleX = x + margin - displaceX + waveX;
+          const sampleY = y + margin - displaceY + waveY;
+
+          const clampedX = Math.max(0, Math.min(expandedCanvas.width - 1, sampleX));
+          const clampedY = Math.max(0, Math.min(expandedCanvas.height - 1, sampleY));
+
+          // Bilinear sample
+          let [r, g, b, a] = sampleBilinear(data, expandedCanvas.width, expandedCanvas.height, clampedX, clampedY);
+
+          const targetIdx = (y * w + x) * 4;
+
+          // Brightness + highlight
+          const baseBoost = 8;
+          const highlight = intensity * 15;
+          let rBoost = Math.min(255, r + highlight + baseBoost);
+          let gBoost = Math.min(255, g + highlight + baseBoost);
+          let bBoost = Math.min(255, b + highlight + baseBoost);
+
+          // Saturation
+          const saturationFactor = 1.10;
+          const gray = 0.3 * rBoost + 0.59 * gBoost + 0.11 * bBoost;
+          rBoost = Math.min(255, Math.max(0, gray + (rBoost - gray) * saturationFactor));
+          gBoost = Math.min(255, Math.max(0, gray + (gBoost - gray) * saturationFactor));
+          bBoost = Math.min(255, Math.max(0, gray + (bBoost - gray) * saturationFactor));
+
+          output[targetIdx] = rBoost;
+          output[targetIdx + 1] = gBoost;
+          output[targetIdx + 2] = bBoost;
+          output[targetIdx + 3] = a;
+        }
+      }
+
+      ctx.putImageData(outputData, 0, 0);
+
+      // 🔹 Apply sharpness filter at the end
+      sharpenImage(ctx, w, h);
+    }
+
+    function animate() {
+      if (bgLoaded) updateCanvas();
+      requestAnimationFrame(animate);
+    }
+    animate();
+
+    // Drag support
+    box.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      offsetX = e.clientX - box.getBoundingClientRect().left;
+      offsetY = e.clientY - box.getBoundingClientRect().top;
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (isDragging) {
+        const newX = e.clientX - offsetX;
+        const newY = e.clientY - offsetY;
+        box.style.left = Math.max(0, Math.min(newX, window.innerWidth - box.offsetWidth)) + 'px';
+        box.style.top = Math.max(0, Math.min(newY, window.innerHeight - box.offsetHeight)) + 'px';
+      }
+    });
+
+    document.addEventListener('mouseup', () => { isDragging = false; });
+
+    // Touch support
+    box.addEventListener('touchstart', (e) => {
+      isDragging = true;
+      const touch = e.touches[0];
+      offsetX = touch.clientX - box.getBoundingClientRect().left;
+      offsetY = touch.clientY - box.getBoundingClientRect().top;
+      e.preventDefault();
+    });
+
+    document.addEventListener('touchmove', (e) => {
+      if (isDragging) {
+        const touch = e.touches[0];
+        const newX = touch.clientX - offsetX;
+        const newY = touch.clientY - offsetY;
+        box.style.left = Math.max(0, Math.min(newX, window.innerWidth - box.offsetWidth)) + 'px';
+        box.style.top = Math.max(0, Math.min(newY, window.innerHeight - box.offsetHeight)) + 'px';
+        e.preventDefault();
+      }
+    });
+
+    document.addEventListener('touchend', () => { isDragging = false; });
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+  </script>
+</body>
+</html>
